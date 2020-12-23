@@ -1,0 +1,23 @@
+#################################################################################################
+#                                                                              					#
+#                             Primary requirements                             					#
+#                                                                              					#
+#                                 CHANGE ME !!!                                					#
+#                                                                              					#
+# Update me and then run 'docker-compose run myconsumer pip_freeze'                             #
+#                                                                              					#
+#################################################################################################
+
+# Consumer
+aet.consumer
+aether.python
+google-auth
+google-cloud-bigquery
+google-cloud-spanner
+
+# Tests
+birdisle
+flake8
+mock
+pytest
+pytest-runner
