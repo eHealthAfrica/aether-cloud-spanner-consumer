@@ -19,7 +19,7 @@
 # under the License.
 
 import json
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from google.auth.credentials import AnonymousCredentials
 from google.oauth2 import service_account
@@ -110,6 +110,15 @@ class BigQuery(bigquery.Client):
         self.create_table(table_)
         return table
 
+    def migrate_schema(self, dataset_id, table_id, avro_schema):
+        fqn = f'{self.project}.{dataset_id}.{table_id}'
+        table = self.get_table(fqn)
+        original_schema = table.schema
+        new_schema = original_schema[:]  # Creates a copy of the schema.
+        new_schema.append(bigquery.SchemaField("phone", "STRING"))
+        table.schema = new_schema
+        table = self.update_table(table, ['schema'])
+
     def write_rows(self, dataset, table, rows):
         # table_id = f'{self.project}.{dataset}.{table}'
         table_id = f'{self.project}.{dataset}.{table}'
@@ -133,59 +142,60 @@ class BQSchema:
     }
 
     AET = {
-
+        "dateTime": "TIMESTAMP",
+        # "geopoint": ""  # single geopoints are not castable to the GEOGRAPHY TYPE,
+        # but the BQ type can be constructed by query from float lat/long using
+        # ST_GEOGPOINT(longitude, latitude)
     }
 
     @classmethod
-    def __resolve_bq_type(cls, type_: str) -> str:
+    def __resolve_bq_type(cls, avro_type: str, field: Dict) -> str:
+        extended_type = field.get('@aether_extended_type')
+        if extended_type and extended_type in cls.AET:
+            return cls.AET[extended_type]
         try:
-            return cls.AVRO_BASE[type_]
+            return cls.AVRO_BASE[avro_type]
         except Exception as err:
-            LOG.error(type_)
+            LOG.error(avro_type)
             raise err
 
     @classmethod
-    def __mode_and_type(cls, field: Dict) -> Tuple[str, str]:  # Tuple[mode(nullable), BQ type]
-        mode, type_ = cls.__primary_avro_type(field)
-        bq_type = cls.__resolve_bq_type(type_)
+    def __mode_and_type(cls, field: Dict) -> Tuple[str, str]:  # Tuple[mode, BQ type]
+        mode, avro_type = cls.__primary_avro_type(field)
+        bq_type = cls.__resolve_bq_type(avro_type, field)
         return (mode, bq_type)
 
     @classmethod
-    def __primary_avro_type(cls, field: Dict) -> Tuple[str, str]:  # Tuple[nullable, avro type]
+    def __handle_nested_type(cls, fields: List) -> Tuple[str, str]:  # Tuple[mode, avro type]:
+        # can't have multiple nested types in the same BQ column so we pick the more preferred
+        type_ = fields[0].get('type')
+        if type_ == 'record':
+            return ('NULLABLE', 'record')
+        else:
+            return ('REPEATED', fields[0].get('items'))
+
+    @classmethod
+    def __primary_avro_type(cls, field: Dict) -> Tuple[str, str]:  # Tuple[mode, avro type]
         type_ = field.get('type')
         if not isinstance(type_, list):
             return ('REQUIRED', type_)
-        elif len(type_) == 0:
+        if len(type_) == 0:
             return ('REQUIRED', type_)
-        elif type_[0] == 'null':
-            nested = [i for i in type_ if isinstance(i, dict)]
-            if nested:
-                n_type = nested[0].get('type')
-                if n_type == 'record':
-                    return ('NULLABLE', 'record')
-                else:
-                    return ('REPEATED', nested[0].get('items'))
-            return ('REQUIRED', type_[1])
         nested = [i for i in type_ if isinstance(i, dict)]
         if nested:
-            n_type = nested[0].get('type')
-            if n_type == 'record':
-                return ('NULLABLE', 'record')
-            else:
-                return ('REPEATED', nested[0].get('items'))
+            return cls.__handle_nested_type(nested)
+        if type_[0] == 'null':
+            return ('NULLABLE', type_[1])
         return ('REQUIRED', type_[0])
 
     @classmethod
     def from_avro(cls, schema_: Dict):
         fields = schema_.get('fields')
-        entries = [cls.xf_field(f) for f in fields]
-        for e in entries:
-            assert(isinstance(e.mode, str)), e.name
-            assert(isinstance(e.field_type, str)), e.name
+        entries = [cls.__xf_field(f) for f in fields]
         return [i for i in entries if i]
 
     @classmethod
-    def xf_field(cls, field: Dict):
+    def __xf_field(cls, field: Dict):
         name = field.get('name')
         type_ = field.get('type')
         mode_, bg_type_ = cls.__mode_and_type(field)
@@ -211,3 +221,24 @@ class BQSchema:
             bg_type_,
             mode=mode_
         )
+
+    @classmethod
+    def merge_schemas(old: List[bigquery.SchemaField], new: List[bigquery.SchemaField]):
+
+        def _select_by_names(items: List, names: List[str]):
+            return [i for i in items if i.name in names]
+
+        # res = old[:]  # must be additive
+        old_names = set([i.name for i in old])
+        new_names = set([i.name for i in new])
+        new_fields = _select_by_names(new, list(new_names - old_names))
+        overlap = old_names.intersection(new_names)
+        updated_fields = [
+            nf for nf in _select_by_names(new, overlap)
+            for of_ in _select_by_names(old, overlap)
+            if (nf.name == of_.name and nf != of_)
+        ]
+        return {
+            'new': [i.name for i in new_fields],
+            'updated': [i.name for i in updated_fields]
+        }

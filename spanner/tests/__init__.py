@@ -69,7 +69,7 @@ TS = str(uuid4()).replace('-', '')[:8]
 TENANT = f'TEN{TS}'
 TEST_TOPIC = 'spanner_test_topic'
 DEFAULT_SPANNER_INSTANCE = 'test-instance'
-DEFAULT_BQDATASET = 'test-dataset'
+DEFAULT_BQDATASET = 'test_data'
 
 GENERATED_SAMPLES = {}
 # We don't want to initiate this more than once...
@@ -105,18 +105,33 @@ def spanner():
 @pytest.mark.integration
 @pytest.fixture(scope='session')
 def bq(service_account_dict, sample_generator):
-    chunks = sample_generator(100, 10)
     client = helpers.BigQuery(credentials=json.dumps(service_account_dict))
     sa = client.get_service_account_email()
     assert sa is not None
-    dataset, table = 'sarwar', 'some_test_table'
-    bq_schema = helpers.BQSchema.from_avro(ANNOTATED_SCHEMA)
-    client._create_table(dataset, table, schema=bq_schema)
-    for docs in chunks:
-        client.write_rows(dataset, table, docs)
     yield client
-    client.delete_table(table)
     client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.integration
+@pytest.fixture(scope='session')
+def bq_table_generator(bq):
+    client = bq
+    dataset = DEFAULT_BQDATASET
+    tables = []
+
+    def fn(avro_schema):
+        seed = str(uuid4()).replace('-', '')[:8]
+        table = f'test_table_v{seed}'
+        fqn = f'{client.project}.{dataset}.{table}'
+        bq_schema = helpers.BQSchema.from_avro(avro_schema)
+        client._create_table(dataset, table, schema=bq_schema)
+        tables.append(fqn)
+        return fqn
+
+    yield fn
+    for t in tables:
+        client.delete_table(t)
 
 
 @pytest.mark.unit
