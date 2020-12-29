@@ -19,7 +19,7 @@
 # under the License.
 
 import json
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from google.auth.credentials import AnonymousCredentials
 from google.oauth2 import service_account
@@ -223,22 +223,66 @@ class BQSchema:
         )
 
     @classmethod
-    def merge_schemas(old: List[bigquery.SchemaField], new: List[bigquery.SchemaField]):
+    def detect_schema_changes(
+        cls,
+        old: List[bigquery.SchemaField],
+        new: List[bigquery.SchemaField]
+    ) -> Dict[str, List[bigquery.SchemaField]]:
 
-        def _select_by_names(items: List, names: List[str]):
-            return [i for i in items if i.name in names]
-
-        # res = old[:]  # must be additive
         old_names = set([i.name for i in old])
         new_names = set([i.name for i in new])
-        new_fields = _select_by_names(new, list(new_names - old_names))
+        new_fields = select_by_names(new, list(new_names - old_names))
         overlap = old_names.intersection(new_names)
         updated_fields = [
-            nf for nf in _select_by_names(new, overlap)
-            for of_ in _select_by_names(old, overlap)
+            nf for nf in select_by_names(new, overlap)
+            for of_ in select_by_names(old, overlap)
             if (nf.name == of_.name and nf != of_)
         ]
         return {
-            'new': [i.name for i in new_fields],
-            'updated': [i.name for i in updated_fields]
+            'new': new_fields,
+            'updated': updated_fields
         }
+
+    @classmethod
+    def merge_schemas(
+        cls,
+        old: List[bigquery.SchemaField],
+        new: List[bigquery.SchemaField]
+    ) -> List[bigquery.SchemaField]:
+        # SchemaField.fields becomes a tuple after construction
+        if not isinstance(old, list):
+            old = list(old)
+        res = old[:]  # must be additive to old schema
+        diff = cls.detect_schema_changes(old, new)
+        for f in diff.get('updated', []):
+            old_field = select_by_name(res, f.name)
+            if len(f.fields) > 0:
+                # SchemaField.fields cannot be replaced so we make a new instance
+                replace_in_place(
+                    res,
+                    old_field,
+                    bigquery.SchemaField(
+                        f.name,
+                        f.field_type,
+                        f.mode,
+                        fields=cls.merge_schemas(old_field.fields, f.fields)
+                    )
+                )
+            else:
+                replace_in_place(res, old_field, f)
+        for f in diff.get('new', []):
+            res.append(f)
+        return res
+
+
+def select_by_names(items: List, names: List[str]):
+    return [i for i in items if i.name in names]
+
+
+def select_by_name(items: List, name: str):
+    return select_by_names(items, [name])[0]
+
+
+def replace_in_place(parent: List, old_child: Any, new_child: Any):
+    idx = parent.index(old_child)
+    parent[idx] = new_child

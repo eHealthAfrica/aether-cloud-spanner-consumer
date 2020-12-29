@@ -19,6 +19,7 @@
 # under the License.
 
 
+import copy
 import json
 import pytest
 import os
@@ -68,7 +69,7 @@ kafka_server = "kafka-test:29099"
 TS = str(uuid4()).replace('-', '')[:8]
 TENANT = f'TEN{TS}'
 TEST_TOPIC = 'spanner_test_topic'
-DEFAULT_SPANNER_INSTANCE = 'test-instance'
+DEFAULT_SPANNER_INSTANCE = 'bq_consumer_travis'
 DEFAULT_BQDATASET = 'test_data'
 
 GENERATED_SAMPLES = {}
@@ -104,7 +105,7 @@ def spanner():
 @pytest.mark.unit
 @pytest.mark.integration
 @pytest.fixture(scope='session')
-def bq(service_account_dict, sample_generator):
+def bq_client(service_account_dict, sample_generator):
     client = helpers.BigQuery(credentials=json.dumps(service_account_dict))
     sa = client.get_service_account_email()
     assert sa is not None
@@ -115,7 +116,7 @@ def bq(service_account_dict, sample_generator):
 @pytest.mark.unit
 @pytest.mark.integration
 @pytest.fixture(scope='session')
-def bq_table_generator(bq):
+def bq_table_generator(bq_client):
     client = bq
     dataset = DEFAULT_BQDATASET
     tables = []
@@ -175,6 +176,45 @@ def redis_client():
     yield r
 
 
+@pytest.fixture(scope='session')
+def ANNOTATED_SCHEMA_V1():
+    yield ANNOTATED_SCHEMA
+
+
+@pytest.fixture(scope='session')
+def ANNOTATED_SCHEMA_V2(ANNOTATED_SCHEMA_V1):
+    schema = copy.deepcopy(ANNOTATED_SCHEMA_V1)
+    schema['fields'].append({
+        'doc': 'A mandatory field, added later!',
+        'name': 'extra_field',
+        'type': 'string',
+        'namespace': 'MySurvey.extra_field'
+    })
+    yield schema
+
+
+@pytest.fixture(scope='session')
+def ANNOTATED_SCHEMA_V3(ANNOTATED_SCHEMA_V2):
+    schema = copy.deepcopy(ANNOTATED_SCHEMA_V2)
+    # relax 'MySurvey.extra_field' -> nullable
+    schema['fields'][-1]['type'] = [
+        'null', 'string'
+    ]
+    geo_index = [x for x, field in enumerate(schema['fields']) if field['name'] == 'geometry'][0]
+    # add a nested field to the geometry sub-record
+    schema['fields'][geo_index]['type'][1]['fields'].append(
+        {
+            'doc': 'WhatThreeWords geocode',
+            'name': 'threewords',
+            'type': [
+                'null',
+                'string'
+            ],
+            'namespace': 'MySurvey.threewords'
+        },
+    )
+    yield schema
+
 # @pytest.mark.integration
 @pytest.fixture(scope='session', autouse=True)
 def create_remote_kafka_assets(request, sample_generator, *args):
@@ -201,7 +241,7 @@ def create_remote_kafka_assets(request, sample_generator, *args):
 
 
 @pytest.fixture(scope='session', autouse=True)
-def check_local_spanner_readyness(request, spanner, bq, *args):
+def check_local_spanner_readyness(request, spanner, bq_client, *args):
     # @mark annotation does not work with autouse=True
     # if 'integration' not in request.config.invocation_params.args:
     #     LOG.debug(f'NOT Checking for LocalFirebase')
