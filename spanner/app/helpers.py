@@ -18,26 +18,28 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from collections import defaultdict
 import json
-from typing import Any, Dict, List, Tuple
-
-from google.auth.credentials import AnonymousCredentials
-from google.oauth2 import service_account
-from google.cloud.spanner import Client as SpannerClient
-from google.cloud import bigquery
-
+from time import sleep
+from typing import (
+    Any, Dict, List, Tuple
+)
 
 from google.api_core.exceptions import NotFound
+from google.api_core.retry import Retry
+from google.auth.credentials import AnonymousCredentials
+from google.cloud.spanner import Client as SpannerClient
+from google.cloud import bigquery
+from google.oauth2 import service_account
 
+from aet.exceptions import MessageHandlingException
 from aet.logger import get_logger
-
-# from app import config, utils
 
 
 LOG = get_logger('HELPERS')
 
 
-class MessageHandlingException(Exception):
+class ClientException(MessageHandlingException):
     # A simple way to handle the variety of expected misbehaviors in message sync
     # Between Aether and Spanner
     pass
@@ -110,22 +112,48 @@ class BigQuery(bigquery.Client):
         self.create_table(table_)
         return table
 
-    def migrate_schema(self, dataset_id, table_id, avro_schema):
+    def migrate_schema(self, dataset_id, table_id, avro_schema, timeout=120, wait=5):  # -> bigquery.Table
         fqn = f'{self.project}.{dataset_id}.{table_id}'
         table = self.get_table(fqn)
         original_schema = table.schema
-        new_schema = original_schema[:]  # Creates a copy of the schema.
-        new_schema.append(bigquery.SchemaField("phone", "STRING"))
+        new_schema = BQSchema.merge_schemas(
+            original_schema,
+            BQSchema.from_avro(avro_schema))
         table.schema = new_schema
-        table = self.update_table(table, ['schema'])
+        self.update_table(table, ['schema'])
+        for x in range(int(timeout / wait)):
+            table = self.get_table(fqn)
+            changes = BQSchema.detect_schema_changes(table.schema, new_schema)
+            if not sum([len(v) for k, v in changes.items()]):
+                return table
+            LOG.debug(f'waiting for BQ service side update, pending: {changes}')
+            sleep(wait)
+        raise ValueError(f'Table does not conform to new schema after {timeout}')
 
-    def write_rows(self, dataset, table, rows):
-        # table_id = f'{self.project}.{dataset}.{table}'
+    def write_rows(self, dataset, table, rows, deadline=30):
         table_id = f'{self.project}.{dataset}.{table}'
-        errors = self.insert_rows_json(table_id, rows)
-        if not errors:
-            return True
-        raise MessageHandlingException(f'Insert Error: {errors}')
+        errors = self.insert_rows_json(
+            table_id,
+            rows,
+            retry=Retry(deadline=deadline)
+        )
+        self._handle_errors(errors)
+        return True
+
+    @classmethod
+    def _handle_errors(cls, errors):
+        HANDLED_ERROR_TYPES = [
+            # ordered by importance to us
+            # (REASON, MATCH_STRING, ALIAS)
+            ('invalid', 'no such field', 'schema mismatch')
+        ]
+        res = defaultdict(set)
+        for blk in errors:
+            for err in blk.get('errors'):
+                res[err['reason']].add(f'{err["message"]} : {err["location"]}')
+        for reason, match, alias in HANDLED_ERROR_TYPES:
+            if reason in res and any([True for err in res[reason] if match in err]):
+                raise ClientException(alias, details=res)
 
 
 class BQSchema:
@@ -250,29 +278,72 @@ class BQSchema:
         new: List[bigquery.SchemaField]
     ) -> List[bigquery.SchemaField]:
         # SchemaField.fields becomes a tuple after construction
-        if not isinstance(old, list):
-            old = list(old)
-        res = old[:]  # must be additive to old schema
+        res = list(old)[:]  # must be additive to old schema
         diff = cls.detect_schema_changes(old, new)
         for f in diff.get('updated', []):
             old_field = select_by_name(res, f.name)
             if len(f.fields) > 0:
                 # SchemaField.fields cannot be replaced so we make a new instance
+                mode = (
+                    f.mode if cls.mode_change_allowed(old_field.mode, f.mode)
+                    else old_field.mode)
                 replace_in_place(
                     res,
                     old_field,
                     bigquery.SchemaField(
                         f.name,
                         f.field_type,
-                        f.mode,
+                        mode,
                         fields=cls.merge_schemas(old_field.fields, f.fields)
                     )
                 )
             else:
-                replace_in_place(res, old_field, f)
+                if cls.field_changes_allowed(old_field, f):
+                    replace_in_place(res, old_field, f)
         for f in diff.get('new', []):
-            res.append(f)
+            if not f.is_nullable:
+                #  cannot add a mandatory field after table is created'
+                corrected = bigquery.SchemaField(
+                    f.name,
+                    f.field_type,
+                    'NULLABLE',
+                    fields=f.fields or ()
+                )
+                LOG.info(f'NEW -> {corrected.name}, {corrected.field_type}, {corrected.mode}, {corrected.fields}')
+                res.append(corrected)
+            else:
+                res.append(f)
         return res
+
+    @classmethod
+    def field_changes_allowed(
+        cls,
+        old: bigquery.SchemaField,
+        new: bigquery.SchemaField
+    ) -> bool:
+        try:
+            assert(cls.mode_change_allowed(old.mode, new.mode))
+            assert(old.field_type == new.field_type)
+            return True
+        except AssertionError:
+            return False
+
+    @classmethod
+    def mode_change_allowed(
+        cls,
+        old: str,  # mode
+        new: str   # mode
+    ) -> bool:
+
+        if old == new:
+            return True
+        allowed = [
+            # BQ only allows the relaxation of columns, not the opposite, or other changes
+            ('REQUIRED', 'NULLABLE')
+        ]
+        if (old, new) in allowed:
+            return True
+        return False
 
 
 def select_by_names(items: List, names: List[str]):

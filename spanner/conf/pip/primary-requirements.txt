@@ -9,7 +9,7 @@
 #################################################################################################
 
 # Consumer
-aet.consumer
+aet.consumer >= 3.10.0
 aether.python
 google-auth
 google-cloud-bigquery

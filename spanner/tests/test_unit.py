@@ -24,7 +24,7 @@ import pytest
 
 
 from app.helpers import (
-    BQSchema, replace_in_place, select_by_name, select_by_names)
+    BigQuery, BQSchema, ClientException, replace_in_place, select_by_name, select_by_names)
 
 from . import *  # get all test assets from test/__init__.py
 # from app.fixtures import examples
@@ -68,6 +68,18 @@ def test__select_by_name():
     assert(zero in more_than_zero)
 
 
+@pytest.mark.parametrize('old,new,ok', [
+    ('NULLABLE', 'NULLABLE', True),
+    ('REQUIRED', 'NULLABLE', True),
+    ('NULLABLE', 'REQUIRED', False)
+])
+@pytest.mark.unit
+def test__mode_change(old, new, ok):
+    assert(
+        BQSchema.mode_change_allowed(old, new) is ok
+    )
+
+
 @pytest.mark.unit
 def test__bq_generate_schema(ANNOTATED_SCHEMA_V1):
     schema = BQSchema.from_avro(ANNOTATED_SCHEMA_V1)
@@ -82,25 +94,83 @@ def test__bq_detect_schema_changes(ANNOTATED_SCHEMA_V1, ANNOTATED_SCHEMA_V2, ANN
     one = BQSchema.from_avro(ANNOTATED_SCHEMA_V1)
     two = BQSchema.from_avro(ANNOTATED_SCHEMA_V2)
     three = BQSchema.from_avro(ANNOTATED_SCHEMA_V3)
+    
     changes = BQSchema.detect_schema_changes(one, two)
     assert(
         select_by_names(changes['new'], ['extra_field']) is not [] and
         not changes.get('updated'))
+    
     changes = BQSchema.detect_schema_changes(one, three)
     assert(
         select_by_names(changes['new'], ['extra_field']) is not [] and
         select_by_names(changes['updated'], ['geometry']) is not [])
+    
     changes = BQSchema.detect_schema_changes(two, three)
     assert(
         select_by_names(changes['updated'], ['extra_field']) is not [] and 
         select_by_names(changes['updated'], ['geometry']) is not [])
 
 @pytest.mark.unit
-def test__bq_merge_schemas(ANNOTATED_SCHEMA_V1, ANNOTATED_SCHEMA_V2, ANNOTATED_SCHEMA_V3):
+def test__bq_merge_schemas(ANNOTATED_SCHEMA_V1, ANNOTATED_SCHEMA_V2, ANNOTATED_SCHEMA_V3, ANNOTATED_SCHEMA_V4):
     one = BQSchema.from_avro(ANNOTATED_SCHEMA_V1)
     two = BQSchema.from_avro(ANNOTATED_SCHEMA_V2)
     three = BQSchema.from_avro(ANNOTATED_SCHEMA_V3)
+    four = BQSchema.from_avro(ANNOTATED_SCHEMA_V4)
+    
     one_three = BQSchema.merge_schemas(one, three)
     assert(
         len(select_by_name(one, 'geometry').fields) <
         len(select_by_name(one_three, 'geometry').fields))
+    
+    one_two = BQSchema.merge_schemas(one, two)
+    assert(
+        len(one_two) > len(one))
+
+    three_four = BQSchema.merge_schemas(three, four)  # change is illegal (making optional field mandatory)
+    # Field is mandatory in new schema
+    assert(select_by_name(four, 'extra_field').is_nullable is False)
+    # Field should still be mandatory after reconciliations with old
+    assert(select_by_name(three_four, 'extra_field').is_nullable is True)
+
+@pytest.mark.unit
+def test__bq_collect_errors():
+    err = [
+        {
+            'index': 0,
+            'errors': [
+                {
+                    'reason': 'invalid',
+                    'location': 'extra_field',
+                    'debugInfo': '',
+                    'message': 'no such field.'
+                }
+            ]
+        },
+        {
+            'index': 1,
+            'errors': [
+                {
+                    'reason': 'invalid',
+                    'location': 'extra_field',
+                    'debugInfo': '',
+                    'message': 'no such field.'
+                }
+            ]
+        },
+        {
+            'index': 2,
+            'errors': [
+                {
+                    'reason': 'invalid',
+                    'location': 'extra_field',
+                    'debugInfo': '',
+                    'message': 'no such field.'
+                }
+            ]
+        }
+    ]
+
+    with pytest.raises(ClientException) as ce:
+        BigQuery._handle_errors(err)
+        assert(ce.details != None)
+     

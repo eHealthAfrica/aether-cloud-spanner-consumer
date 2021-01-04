@@ -34,7 +34,7 @@ from confluent_kafka import KafkaException
 
 
 # Consumer SDK
-from aet.exceptions import ConsumerHttpException
+from aet.exceptions import ConsumerHttpException, MessageHandlingException
 from aet.job import BaseJob, JobStatus
 from aet.kafka import KafkaConsumer, FilterConfig, MaskConfig
 from aet.logger import callback_logger, get_logger
@@ -47,7 +47,7 @@ from werkzeug.local import LocalProxy
 from app.config import get_consumer_config, get_kafka_config
 from app.fixtures import schemas
 
-# from app import helpers
+from app import helpers
 
 LOG = get_logger('artifacts')
 CONSUMER_CONFIG = get_consumer_config()
@@ -279,25 +279,39 @@ class SpannerJob(BaseJob):
         count = 0
         subs = {}
         # spanner: SpannerInstance = self._job_spanner()
-        for msg in messages:
-            topic = msg.topic
-            if topic not in subs:
-                subs[topic] = self._job_subscription_for_topic(topic)
-            schema = msg.schema
-            if schema != self._schemas.get(topic):
-                self.log.info(f'{self._id} Schema change on {topic}')
-                self._update_topic(topic, schema)
-                self._schemas[topic] = schema
-            else:
-                self.log.debug('Schema unchanged.')
-            # self.add_message(msg.value, topic, subs[topic], cfs, batch)
-            count += 1
-            if (count % MAX_SUBMIT) == 0:
-                # batch.commit()
-                # batch = cfs.batch()
-                pass
-        # batch.commit()
-        self.log.info(f'processed {count} {topic} docs in tenant {self.tenant}')
+        offset = None
+        try:
+            for msg in messages:
+                offset = msg.offset
+                topic = msg.topic
+                if topic not in subs:
+                    subs[topic] = self._job_subscription_for_topic(topic)
+                schema = msg.schema
+                if schema != self._schemas.get(topic):
+                    self.log.info(f'{self._id} Schema change on {topic}')
+                    self._update_topic(topic, schema)
+                    self._schemas[topic] = schema
+                    # batch.commit()
+                    raise helpers.ClientException('schema change propagating')
+                else:
+                    self.log.debug('Schema unchanged.')
+                # self.add_message(msg.value, topic, subs[topic], cfs, batch)
+                count += 1
+                if (count % MAX_SUBMIT) == 0:
+                    # batch.commit()
+                    # batch = cfs.batch()
+                    pass
+            # batch.commit()
+            self.log.info(f'processed {count} {topic} docs in tenant {self.tenant}')
+        except helpers.ClientException as ce:
+            raise MessageHandlingException(
+                'submission error',
+                details={'offset': offset}
+            ) from ce
+
+    # thrown manually when something in _handle_messages goes wrong
+    def _on_message_handle_exception(self, mhe: MessageHandlingException):
+        pass
 
     # called when a subscription causes a new assignment to be given to the consumer
     def _on_assign(self, *args, **kwargs):

@@ -70,7 +70,7 @@ TS = str(uuid4()).replace('-', '')[:8]
 TENANT = f'TEN{TS}'
 TEST_TOPIC = 'spanner_test_topic'
 DEFAULT_SPANNER_INSTANCE = 'bq_consumer_travis'
-DEFAULT_BQDATASET = 'test_data'
+DEFAULT_BQDATASET = 'bq_consumer_travis'
 
 GENERATED_SAMPLES = {}
 # We don't want to initiate this more than once...
@@ -117,7 +117,7 @@ def bq_client(service_account_dict, sample_generator):
 @pytest.mark.integration
 @pytest.fixture(scope='session')
 def bq_table_generator(bq_client):
-    client = bq
+    client = bq_client
     dataset = DEFAULT_BQDATASET
     tables = []
 
@@ -132,7 +132,8 @@ def bq_table_generator(bq_client):
 
     yield fn
     for t in tables:
-        client.delete_table(t)
+        res = client.delete_table(t)
+        LOG.debug(f'removed table {t}: {res}')
 
 
 @pytest.mark.unit
@@ -215,6 +216,13 @@ def ANNOTATED_SCHEMA_V3(ANNOTATED_SCHEMA_V2):
     )
     yield schema
 
+@pytest.fixture(scope='session')
+def ANNOTATED_SCHEMA_V4(ANNOTATED_SCHEMA_V3):
+    schema = copy.deepcopy(ANNOTATED_SCHEMA_V3)
+    # relax 'MySurvey.extra_field' -> required (illegal)
+    schema['fields'][-1]['type'] = 'string'
+    yield schema
+
 # @pytest.mark.integration
 @pytest.fixture(scope='session', autouse=True)
 def create_remote_kafka_assets(request, sample_generator, *args):
@@ -261,6 +269,34 @@ def check_local_spanner_readyness(request, spanner, bq_client, *args):
 @pytest.fixture(scope='session', autouse=True)
 def make_local_spanner(request, local_spanner_instance, *args):
     LOG.debug(local_spanner_instance.display_name)
+
+
+
+@pytest.mark.unit
+@pytest.mark.integration
+@pytest.fixture(scope='session')
+def any_sample_generator():
+    
+    def _gen(schema, max=None, chunk=None):
+        
+        t = generation.SampleGenerator(schema)
+
+        def _single(max):
+            if not max:
+                while True:
+                    yield t.make_sample()
+            for x in range(max):
+                yield t.make_sample()
+
+        def _chunked(max, chunk):
+            return chunk_iterable(_single(max), chunk)
+
+        if chunk:
+            yield from _chunked(max, chunk)
+        else:
+            yield from _single(max)
+    yield _gen
+
 
 
 @pytest.mark.unit
