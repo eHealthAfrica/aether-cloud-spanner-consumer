@@ -18,6 +18,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
+BQ_INSTANCE = {
+    'id': 'default',
+    'name': 'the default instance',
+    'project': 'some-project',                  # Project ID of Spanner instance
+    'credential': {'json': 'doc'},              # credentials document
+    'dataset': 'test-ds'
+}
+
 
 SPANNER_INSTANCE = {
     'id': 'default',
@@ -25,14 +33,14 @@ SPANNER_INSTANCE = {
     'project': 'some-project',                  # Project ID of Spanner instance
     'credential': {'json': 'doc'},              # credentials document
     'instance': 'test-instance',
-    'database': 'test-db',
-    'table': 'test-table'                       # Spanner table to write to
+    'database': 'test-db'
 }
 
 
 SUBSCRIPTION = {
     'id': 'sub-test',
     'name': 'Test Subscription',
+    'table': 'test-table',                        # Output table to write to
     'topic_pattern': '*',
     'topic_options': {
         'masking_annotation': '@aether_masking',  # schema key for mask level of a field
@@ -46,7 +54,7 @@ SUBSCRIPTION = {
 
 JOB = {
     'id': 'default',
-    'name': 'Default Firebase Consumer Job',
+    'name': 'Default Google Consumer Job',
     'spanner': 'default',
     'subscription': ['sub-test']
 }

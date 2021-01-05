@@ -49,10 +49,9 @@ from aet.logger import get_logger
 
 from aether.python.avro import generation
 
-
-from app import artifacts, config, consumer
+from app import artifacts, config, consumer, helpers
 from app.fixtures import examples
-from app import helpers
+
 
 CONSUMER_CONFIG = config.consumer_config
 KAFKA_CONFIG = config.kafka_config
@@ -175,6 +174,26 @@ def redis_client():
     password = os.environ.get('REDIS_PASSWORD')
     r = Redis(host='redis', password=password)
     yield r
+
+
+@pytest.fixture(scope='session')
+def bq_instance_service_definition(service_account_dict):
+    doc = copy.copy(examples.BQ_INSTANCE)
+    doc['credential'] = service_account_dict
+    doc['dataset'] = DEFAULT_BQDATASET
+    yield doc
+
+
+@pytest.fixture(scope='session')
+def bq_resource(bq_instance_service_definition):
+    inst = artifacts.BQInstance(
+        TENANT,
+        bq_instance_service_definition,
+        None
+    )
+    assert(inst.test_connection() is True)
+    yield inst
+    inst.close()
 
 
 @pytest.fixture(scope='session')

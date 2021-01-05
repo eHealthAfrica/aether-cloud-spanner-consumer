@@ -20,7 +20,6 @@
 
 from collections import defaultdict
 import json
-from time import sleep
 from typing import (
     Any, Dict, List, Tuple
 )
@@ -98,7 +97,7 @@ class BigQuery(bigquery.Client):
         try:
             return self.get_dataset(dataset_id)
         except NotFound:
-            raise RuntimeError(f'Target dataset {dataset_id} must exist')
+            raise RuntimeError(f'Target dataset {dataset_id} must exist, create it in BQ admin interface')
 
     def _create_table(self, dataset, table, schema):
 
@@ -112,7 +111,7 @@ class BigQuery(bigquery.Client):
         self.create_table(table_)
         return table
 
-    def migrate_schema(self, dataset_id, table_id, avro_schema, timeout=120, wait=5):  # -> bigquery.Table
+    def migrate_schema(self, dataset_id, table_id, avro_schema):  # -> bigquery.Table
         fqn = f'{self.project}.{dataset_id}.{table_id}'
         table = self.get_table(fqn)
         original_schema = table.schema
@@ -121,14 +120,9 @@ class BigQuery(bigquery.Client):
             BQSchema.from_avro(avro_schema))
         table.schema = new_schema
         self.update_table(table, ['schema'])
-        for x in range(int(timeout / wait)):
-            table = self.get_table(fqn)
-            changes = BQSchema.detect_schema_changes(table.schema, new_schema)
-            if not sum([len(v) for k, v in changes.items()]):
-                return table
-            LOG.debug(f'waiting for BQ service side update, pending: {changes}')
-            sleep(wait)
-        raise ValueError(f'Table does not conform to new schema after {timeout}')
+        # there is no way to check to see if the new schema has propagated
+        # except to fail to submit data
+        return table
 
     def write_rows(self, dataset, table, rows, deadline=30):
         table_id = f'{self.project}.{dataset}.{table}'
@@ -141,11 +135,11 @@ class BigQuery(bigquery.Client):
         return True
 
     @classmethod
-    def _handle_errors(cls, errors):
+    def _handle_errors(cls, errors) -> None:  # raises ClientException
         HANDLED_ERROR_TYPES = [
             # ordered by importance to us
             # (REASON, MATCH_STRING, ALIAS)
-            ('invalid', 'no such field', 'schema mismatch')
+            ('invalid', 'no such field', 'schema_mismatch')
         ]
         res = defaultdict(set)
         for blk in errors:
@@ -154,6 +148,8 @@ class BigQuery(bigquery.Client):
         for reason, match, alias in HANDLED_ERROR_TYPES:
             if reason in res and any([True for err in res[reason] if match in err]):
                 raise ClientException(alias, details=res)
+        if len(res.keys()) > 0:
+            raise ClientException('unexpected BigQuery client error', details=res)
 
 
 class BQSchema:

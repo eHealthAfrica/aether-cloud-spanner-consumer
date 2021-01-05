@@ -19,13 +19,13 @@
 # under the License.
 
 import fnmatch
-# import json
+import json
 from time import sleep
 from typing import (
-    Any,
+    # Any,
     Callable,
     List,
-    Mapping
+    # Mapping
 )
 
 from confluent_kafka import KafkaException
@@ -52,6 +52,44 @@ from app import helpers
 LOG = get_logger('artifacts')
 CONSUMER_CONFIG = get_consumer_config()
 KAFKA_CONFIG = get_kafka_config()
+
+
+class BQInstance(BaseResource):
+    schema = schemas.BQ_INSTANCE
+    jobs_path = '$.bigquery'
+    name = 'bigquery'
+    public_actions = BaseResource.public_actions + [
+        'test_connection'
+    ]
+
+    def __init__(self, tenant, definition):
+        super().__init__(tenant, definition)
+        self.bq = None
+        self.dataset = None
+
+    def get_bq(self) -> helpers.BigQuery:
+        if not self.bq:
+            service_account_dict = json.loads(self.definition['credential'])
+            self.bq = helpers.BigQuery(credentials=json.dumps(service_account_dict))
+            self.dataset = self.definition['dataset']
+        return self.bq
+
+    def test_connection(self, *args, **kwargs):
+        try:
+            LOG.info('testing connection')
+            client = self.get_bq()
+            sa = client.get_service_account_email()
+            if not sa:
+                raise Exception('Could not fetch service account')
+            client._create_dataset(self.dataset)
+            return True
+        except Exception as unexpected:
+            raise ConsumerHttpException(unexpected, 500)
+
+    def close(self):
+        if self.bq:
+            self.bq.close()
+            self.bq = None
 
 
 class SpannerInstance(BaseResource):
@@ -273,45 +311,49 @@ class SpannerJob(BaseJob):
             self.log.info(f'{self.tenant} added subs to topics: {_diff}')
             self.consumer.subscribe(new_subs, on_assign=self._on_assign)
 
-    def _handle_messages(self, config, messages):
-        self.log.debug(f'{self.group_name} | reading {len(messages)} messages')
-        MAX_SUBMIT = 50
-        count = 0
-        subs = {}
-        # spanner: SpannerInstance = self._job_spanner()
-        offset = None
-        try:
-            for msg in messages:
-                offset = msg.offset
-                topic = msg.topic
-                if topic not in subs:
-                    subs[topic] = self._job_subscription_for_topic(topic)
-                schema = msg.schema
-                if schema != self._schemas.get(topic):
-                    self.log.info(f'{self._id} Schema change on {topic}')
-                    self._update_topic(topic, schema)
-                    self._schemas[topic] = schema
-                    # batch.commit()
-                    raise helpers.ClientException('schema change propagating')
-                else:
-                    self.log.debug('Schema unchanged.')
-                # self.add_message(msg.value, topic, subs[topic], cfs, batch)
-                count += 1
-                if (count % MAX_SUBMIT) == 0:
-                    # batch.commit()
-                    # batch = cfs.batch()
-                    pass
-            # batch.commit()
-            self.log.info(f'processed {count} {topic} docs in tenant {self.tenant}')
-        except helpers.ClientException as ce:
-            raise MessageHandlingException(
-                'submission error',
-                details={'offset': offset}
-            ) from ce
+    # def _handle_messages(self, config, messages):
+    #     self.log.debug(f'{self.group_name} | reading {len(messages)} messages')
+    #     count = 0
+    #     subs = {}
+    #     # spanner: SpannerInstance = self._job_spanner()
+    #     client = None
+    #     first_offset = messages[0].offset
+    #     last_offset = None
+    #     try:
+    #         batch = []
+    #         for msg in messages:
+    #             last_offset = msg.offset
+    #             topic = msg.topic
+    #             if topic not in subs:
+    #                 subs[topic] = self._job_subscription_for_topic(topic)
+    #             subscription = subs[topic]
+    #             schema = msg.schema
+    #             if schema != self._schemas.get(topic):
+    #                 self.log.info(f'{self._id} Schema change on {topic}')
+    #                 self._update_topic(client, subscription, topic, schema)
+    #                 self._schemas[topic] = schema
+    #             else:
+    #                 self.log.debug('Schema unchanged.')
+    #             batch.append(msg.value)
+    #             # self.add_message(msg.value, topic, subs[topic], cfs, batch)
+    #             count += 1
+    #             if (count % MAX_SUBMIT) == 0:
+    #                 # batch.commit()
+    #                 # batch = cfs.batch()
+    #                 pass
+    #         # batch.commit()
+    #         self.log.info(f'processed {count} {topic} docs in tenant {self.tenant}')
+    #     except helpers.ClientException as ce:
+    #         raise MessageHandlingException(
+    #             'submission error',
+    #             details={'offset': offset}
+    #         ) from ce
 
     # thrown manually when something in _handle_messages goes wrong
     def _on_message_handle_exception(self, mhe: MessageHandlingException):
-        pass
+        LOG.error(f'msg_handle_exception: {mhe}')
+        if str(mhe) == 'submission_error':
+            LOG.debug(mhe.details)
 
     # called when a subscription causes a new assignment to be given to the consumer
     def _on_assign(self, *args, **kwargs):
@@ -362,19 +404,12 @@ class SpannerJob(BaseJob):
     def _name_from_topic(self, topic):
         return topic.lstrip(f'{self.tenant}.')
 
-    def _update_topic(self, topic, schema: Mapping[Any, Any]):
-        self.log.debug(f'{self.tenant} is updating topic schema: {topic},'
-                       f' firebase does not care...')
-
-    def add_message(
-        self,
-        doc,
-        topic: str,
-        sub: Subscription,
-        # cfs: firestore.Client,
-        # batch: firestore_v1.batch.WriteBatch
-    ):
-        pass
+    # def _update_topic(self, resource: BQInstance, subscription: Subscription, topic, schema: Mapping[Any, Any]):
+    #     if isinstance(resource, BigQuery):
+    #         client = resource.get_bq()
+    #         table = client._create_table()
+    #         self.log.debug(f'{self.tenant} is updating topic schema: {topic},'
+    #                        f' firebase does not care...')
 
     # public
     def list_topics(self, *args, **kwargs):

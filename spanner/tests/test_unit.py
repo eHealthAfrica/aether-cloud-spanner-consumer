@@ -133,7 +133,7 @@ def test__bq_merge_schemas(ANNOTATED_SCHEMA_V1, ANNOTATED_SCHEMA_V2, ANNOTATED_S
     assert(select_by_name(three_four, 'extra_field').is_nullable is True)
 
 @pytest.mark.unit
-def test__bq_collect_errors():
+def test__bq_handle_errors():
     err = [
         {
             'index': 0,
@@ -170,7 +170,11 @@ def test__bq_collect_errors():
         }
     ]
 
-    with pytest.raises(ClientException) as ce:
+    
+    try:
         BigQuery._handle_errors(err)
-        assert(ce.details != None)
+    except ClientException as ce:
+        assert(str(ce) == 'schema_mismatch')
+        assert(len(ce.details.keys()) == 1)
+        assert(len(ce.details['invalid']) == 1)
      

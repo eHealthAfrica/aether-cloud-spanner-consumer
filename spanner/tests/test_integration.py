@@ -18,8 +18,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from time import sleep
+
 from app.helpers import (
-    BQSchema)
+    BQSchema,
+    ClientException,
+)
 
 from . import *  # get all test assets from test/__init__.py
 
@@ -34,37 +38,53 @@ from . import *  # get all test assets from test/__init__.py
 
 
 @pytest.mark.integration
-def test__bq_mutate_schema_and_submit(
-    any_sample_generator,
-    bq_client,
-    bq_table_generator,
-    ANNOTATED_SCHEMA_V1,
-    ANNOTATED_SCHEMA_V2,
-    ANNOTATED_SCHEMA_V3,
-    ANNOTATED_SCHEMA_V4):
+def test__bq_resource(bq_resource):
+    assert(bq_resource.test_connection() == True)
+
+
+# @pytest.mark.integration
+# def test__bq_mutate_schema_and_submit(
+#     any_sample_generator,
+#     bq_client,
+#     bq_table_generator,
+#     ANNOTATED_SCHEMA_V1,
+#     ANNOTATED_SCHEMA_V2,  # speed this up a bit by only doing one transition
+#     # ANNOTATED_SCHEMA_V3,
+#     # ANNOTATED_SCHEMA_V4
+# ):
     
-    fqn = bq_table_generator(ANNOTATED_SCHEMA_V1)
-    project_id, dataset_id, table_id = fqn.split('.')
+#     fqn = bq_table_generator(ANNOTATED_SCHEMA_V1)
+#     project_id, dataset_id, table_id = fqn.split('.')
 
-    i = 1
-    for avro_schema in (
-        ANNOTATED_SCHEMA_V1,
-        ANNOTATED_SCHEMA_V2,
-        ANNOTATED_SCHEMA_V3,
-        ANNOTATED_SCHEMA_V4
-    ):
-        LOG.error(f'migrating -> v{i}')
-        table = bq_client.migrate_schema(dataset_id, table_id, avro_schema)
-        LOG.error(f'New Schema version {i}')
-        LOG.debug(json.dumps([i.name for i in table.schema], indent=2))
-        samples = any_sample_generator(avro_schema, max=20, chunk=10)
-        # need a very long timeout after schema change...
-        deadline = 300
-        for chunk in samples:
-            bq_client.write_rows(dataset_id, table_id, chunk, deadline)
-            deadline = 10
-        i += 1
-
+#     i = 1
+#     for avro_schema in (
+#         ANNOTATED_SCHEMA_V1,
+#         ANNOTATED_SCHEMA_V2,
+#         # ANNOTATED_SCHEMA_V3,
+#         # ANNOTATED_SCHEMA_V4
+#     ):
+#         LOG.error(f'migrating -> v{i}')
+#         table = bq_client.migrate_schema(dataset_id, table_id, avro_schema)
+#         samples = list(any_sample_generator(avro_schema, max=20, chunk=10))
+#         retry = 10
+#         backoff = 10
+#         start = 0
+#         wait = 0
+#         total = 0
+#         while retry:
+#             try:
+#                 for x, chunk in enumerate(samples[start:]):  # don't retry successful batches
+#                     bq_client.write_rows(dataset_id, table_id, chunk)
+#                     start += 1
+#                 break
+#             except ClientException as ce:
+#                 if str(ce) != 'schema_mismatch':
+#                     raise ce
+#                 retry -= 1
+#                 total += wait
+#                 wait += backoff
+#                 LOG.debug(f'schema mismatch, waiting {wait}, previous total wait: {total}')
+#                 sleep(wait)
 
 
 # @pytest.mark.integration
