@@ -23,7 +23,7 @@ BQ_INSTANCE = {
     'name': 'the default instance',
     'project': 'some-project',                  # Project ID of Spanner instance
     'credential': {'json': 'doc'},              # credentials document
-    'dataset': 'test-ds'
+    'dataset': 'test_ds'
 }
 
 
@@ -32,15 +32,15 @@ SPANNER_INSTANCE = {
     'name': 'the default instance',
     'project': 'some-project',                  # Project ID of Spanner instance
     'credential': {'json': 'doc'},              # credentials document
-    'instance': 'test-instance',
-    'database': 'test-db'
+    'instance': 'test_instance',
+    'database': 'test_db'
 }
 
 
 SUBSCRIPTION = {
     'id': 'sub-test',
     'name': 'Test Subscription',
-    'table': 'test-table',                        # Output table to write to
+    'table': 'test_table',                        # Output table to write to
     'topic_pattern': '*',
     'topic_options': {
         'masking_annotation': '@aether_masking',  # schema key for mask level of a field
@@ -55,6 +55,6 @@ SUBSCRIPTION = {
 JOB = {
     'id': 'default',
     'name': 'Default Google Consumer Job',
-    'spanner': 'default',
+    'bigquery': 'default',
     'subscription': ['sub-test']
 }

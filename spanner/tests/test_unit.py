@@ -177,4 +177,20 @@ def test__bq_handle_errors():
         assert(str(ce) == 'schema_mismatch')
         assert(len(ce.details.keys()) == 1)
         assert(len(ce.details['invalid']) == 1)
-     
+
+
+@pytest.mark.parametrize('name,ok', [
+    ('NULLABLE', True),
+    ('Mixed', True),
+    ('not_camel_case', True),
+    ('fewer_charaters', True),
+    ('Ver-boten', False),
+])
+@pytest.mark.unit
+def test__subscription_validation(name, ok):
+    def_ = {'table': name}
+    if not ok:
+        with pytest.raises(AssertionError):
+            artifacts.Subscription._secondary_validation(def_)
+    else:
+        assert(artifacts.Subscription._secondary_validation(def_) is None)

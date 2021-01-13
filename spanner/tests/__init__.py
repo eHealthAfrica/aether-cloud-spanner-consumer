@@ -39,13 +39,13 @@ from aet.kafka_utils import (
     delete_topic,
     get_producer,
     get_admin_client,
-    # get_broker_info,
-    # is_kafka_available,
     produce
 )
+
+from aet.exceptions import MessageHandlingException
 from aet.helpers import chunk_iterable
-from aet.logger import get_logger
-# from aet.jsonpath import CachedParser
+from aet.logger import callback_logger, get_logger
+from aet.resource import InstanceManager
 
 from aether.python.avro import generation
 
@@ -68,6 +68,7 @@ kafka_server = "kafka-test:29099"
 TS = str(uuid4()).replace('-', '')[:8]
 TENANT = f'TEN{TS}'
 TEST_TOPIC = 'spanner_test_topic'
+TEST_TABLE = f'test_table_{TS}'
 DEFAULT_SPANNER_INSTANCE = 'bq_consumer_travis'
 DEFAULT_BQDATASET = 'bq_consumer_travis'
 
@@ -80,6 +81,100 @@ def check_spanner_alive(client):
         return
     else:
         raise RuntimeError('Spanner emulator not found')
+
+
+class LocalJob(artifacts.SpannerJob):
+    '''
+        A way to allows tests to manually handle the run method without it automatically consuming
+    '''
+
+    @classmethod
+    def get_offset_from_consumer(cls, consumer):
+        # utility function used by tests
+        partitions = consumer.assignment()
+        partitions = consumer.position(partitions)
+        return {p.topic: p.offset for p in partitions}
+
+
+    def __init__(self, _id: str, tenant: str, config: dict, resources: InstanceManager = None):
+        self._id = _id
+        self.tenant = tenant
+        self.resources = resources
+        self.context = None
+        self.config = config
+        self._setup()
+        # self._start()
+
+    def _run(self):
+        '''
+        greatly simplified run loop, handles one message on call so we can step through
+        '''
+
+        config = copy.deepcopy(self.config)
+        try:
+            messages = self._get_messages(config)
+            if messages:
+                self._handle_messages(config, messages)
+        except MessageHandlingException as mhe:
+            self._on_message_handle_exception(mhe)
+        except RuntimeError as rer:
+            self.log.critical(f'RuntimeError: {self._id} | {rer}')
+            self.safe_sleep(self.sleep_delay)
+
+    def get_current_offset(self) -> dict:
+        # utility function used by tests
+        return self.get_offset_from_consumer(self.consumer)
+
+
+@pytest.mark.integration
+@pytest.fixture(scope='function')
+def LoadedLocalJob(
+    subscription_resource_definition,
+    bq_instance_service_definition
+):
+    '''
+    Expose a LocalJob wrapped Job
+    '''
+    im = InstanceManager(artifacts.SpannerJob._resources)
+    for type_, ref in [
+        ('subscription', subscription_resource_definition),
+        ('bigquery', bq_instance_service_definition)
+    ]:
+        im.update(ref['id'], type_, TENANT, ref)
+    conf = examples.JOB
+    
+    job = LocalJob(
+        conf['id'],
+        TENANT,
+        conf,
+        im
+    )
+    yield job
+    if job.consumer:
+        job.consumer.close()
+
+@pytest.mark.integration
+@pytest.fixture(scope='session')
+def JobManagerRunningConsumer(
+    subscription_resource_definition,
+    bq_instance_service_definition,
+    redis_client
+):
+    '''
+    Expose the running job from a real consumer instance
+    '''
+    c = consumer.SpannerConsumer(CONSUMER_CONFIG, KAFKA_CONFIG, redis_client)
+    job_manager = c.job_manager
+    job = examples.JOB
+    for type_, ref in [
+        ('subscription', subscription_resource_definition),
+        ('bigquery', bq_instance_service_definition)
+    ]:
+        job_manager.resources.update(ref['id'], type_, TENANT, ref)
+    job_manager._init_job(job, TENANT)
+    yield job_manager
+    c.stop()
+
 
 
 @pytest.mark.unit
@@ -105,7 +200,10 @@ def spanner():
 @pytest.mark.integration
 @pytest.fixture(scope='session')
 def bq_client(service_account_dict, sample_generator):
-    client = helpers.BigQuery(credentials=json.dumps(service_account_dict))
+    client = helpers.BigQuery(
+        credentials=json.dumps(service_account_dict),
+        dataset=DEFAULT_BQDATASET
+    )
     sa = client.get_service_account_email()
     assert sa is not None
     yield client
@@ -118,21 +216,24 @@ def bq_client(service_account_dict, sample_generator):
 def bq_table_generator(bq_client):
     client = bq_client
     dataset = DEFAULT_BQDATASET
-    tables = []
+    tables = [f'{client.project}.{dataset}.{TEST_TABLE}']  # created by examples.SUBSCRIPTION
 
     def fn(avro_schema):
         seed = str(uuid4()).replace('-', '')[:8]
         table = f'test_table_v{seed}'
         fqn = f'{client.project}.{dataset}.{table}'
         bq_schema = helpers.BQSchema.from_avro(avro_schema)
-        client._create_table(dataset, table, schema=bq_schema)
+        client._create_table(table, schema=bq_schema)
         tables.append(fqn)
         return fqn
 
     yield fn
     for t in tables:
-        res = client.delete_table(t)
-        LOG.debug(f'removed table {t}: {res}')
+        try:
+            res = client.delete_table(t)
+            LOG.debug(f'removed table {t}: {res}')
+        except Exception as err:
+            LOG.error(f'could not remove table {t} from bq : {err}')
 
 
 @pytest.mark.unit
@@ -175,6 +276,14 @@ def redis_client():
     r = Redis(host='redis', password=password)
     yield r
 
+
+@pytest.mark.unit
+@pytest.fixture(scope='session')
+def subscription_resource_definition():
+    doc = copy.copy(examples.SUBSCRIPTION)
+    doc['table'] = TEST_TABLE
+    doc['topic-pattern'] = TEST_TOPIC
+    yield doc
 
 @pytest.fixture(scope='session')
 def bq_instance_service_definition(service_account_dict):
@@ -265,6 +374,23 @@ def create_remote_kafka_assets(request, sample_generator, *args):
         yield None  # end of work before clean-up
         LOG.debug(f'deleting topic: {new_topic}')
         delete_topic(kadmin, new_topic)
+
+
+@pytest.fixture(scope='session', autouse=True)
+def extend_kafka_topic(any_sample_generator):
+    kafka_security = config.get_kafka_admin_config()
+    producer = get_producer(kafka_security)
+    topic = f'{TENANT}.{TEST_TOPIC}'
+
+    def fn(schema_dict, docs=10):
+        schema_avro = parse(json.dumps(schema_dict))
+        docs = any_sample_generator(schema_dict, max=docs, chunk=min([docs, 10]))
+        for subset in docs:
+            res = produce(subset, schema_avro, topic, producer)
+            LOG.debug(res)
+        producer.flush()
+    
+    yield fn
 
 
 @pytest.fixture(scope='session', autouse=True)

@@ -10,7 +10,7 @@
 
 # Consumer
 aet.consumer >= 3.10.0
-aether.python
+aether.python >= 1.3.0
 google-auth
 google-cloud-bigquery
 google-cloud-spanner

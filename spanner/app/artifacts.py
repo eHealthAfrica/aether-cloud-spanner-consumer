@@ -20,34 +20,37 @@
 
 import fnmatch
 import json
+import re
 from time import sleep
-from typing import (
-    # Any,
+from typing import (  # noqa
+    Any,
     Callable,
     List,
-    # Mapping
+    Mapping,
+    Union
 )
 
 from confluent_kafka import KafkaException
 
-# Spanner
 
+# Python SDK
+from aether.python.avro.normalization import fingerprint_noncanonical
 
 # Consumer SDK
 from aet.exceptions import ConsumerHttpException, MessageHandlingException
 from aet.job import BaseJob, JobStatus
 from aet.kafka import KafkaConsumer, FilterConfig, MaskConfig
 from aet.logger import callback_logger, get_logger
-from aet.resource import BaseResource, lock
+from aet.resource import BaseResource
 from werkzeug.local import LocalProxy
-
-# Aether python lib
-# from aether.python.avro.schema import Node
 
 from app.config import get_consumer_config, get_kafka_config
 from app.fixtures import schemas
 
 from app import helpers
+
+
+SNAKE_CASE = re.compile(r'^[a-zA-Z_]+$')
 
 LOG = get_logger('artifacts')
 CONSUMER_CONFIG = get_consumer_config()
@@ -62,26 +65,28 @@ class BQInstance(BaseResource):
         'test_connection'
     ]
 
-    def __init__(self, tenant, definition):
-        super().__init__(tenant, definition)
+    def __init__(self, tenant, definition, context):
+        super().__init__(tenant, definition, context)
         self.bq = None
         self.dataset = None
 
-    def get_bq(self) -> helpers.BigQuery:
+    def get_client(self) -> helpers.BigQuery:
         if not self.bq:
-            service_account_dict = json.loads(self.definition['credential'])
-            self.bq = helpers.BigQuery(credentials=json.dumps(service_account_dict))
+            service_account_dict = self.definition['credential']
             self.dataset = self.definition['dataset']
+            self.bq = helpers.BigQuery(
+                credentials=json.dumps(service_account_dict),
+                dataset=self.dataset)
         return self.bq
 
     def test_connection(self, *args, **kwargs):
         try:
             LOG.info('testing connection')
-            client = self.get_bq()
+            client = self.get_client()
             sa = client.get_service_account_email()
             if not sa:
                 raise Exception('Could not fetch service account')
-            client._create_dataset(self.dataset)
+            client._create_dataset()
             return True
         except Exception as unexpected:
             raise ConsumerHttpException(unexpected, 500)
@@ -100,45 +105,10 @@ class SpannerInstance(BaseResource):
         'test_connection'
     ]
 
-    def __init__(self, tenant, definition, app=None):
-        super().__init__(tenant, definition)
-        # makes unit tests easier
-        if app:
-            self.app = app
-
-    @lock
-    def get_session(self):
-        if self.app:
-            return self.app
-        # name = self.definition["name"]
-        # credentials = firebase_credentials.Certificate(self.definition['credential'])
-        # LOG.debug('created credentials')
-        # options = {'databaseURL': self.definition['url']}
-        # LOG.debug(f'making app with {name}, {credentials}, {options}')
-        # self.app = firebase_admin.initialize_app(
-        #     name=name,
-        #     credential=credentials,
-        #     options=options
-        # )
-        # LOG.info('App initialized')
-        # return self.app
-
-    def get_spanner(self):
+    def get_client(self):
         pass
 
     def test_connection(self, *args, **kwargs):
-        # try:
-        #     LOG.info('testing connection')
-        #     rtdb = self.get_rtdb()
-        #     LOG.info('got reference')
-        #     ref = rtdb.reference('some/path')
-        #     cref = self.get_cloud_firestore().collection(
-        #         u'testconnection').document(u'consumerping')
-        #     return (ref and cref) is not None
-        # except UnavailableError as err:
-        #     raise ConsumerHttpException(err, 500)
-        # except Exception as unexpected:
-        #     raise ConsumerHttpException(unexpected, 500)
         pass
 
 
@@ -177,17 +147,9 @@ class Subscription(BaseResource):
     @classmethod
     def _secondary_validation(cls, definition):
         # raises AssertionError on Failure
-        target = definition.get(
-            'fb_options', {}).get(
-            'target_path')
-        if target:
-            assert(len(target.split('/')) % 2 != 0), f'target path"{target}" must be even'
-            wc = '{topic}'
-            if wc in target:
-                no_wc = target.replace(wc, '')
-            else:
-                no_wc = target
-            assert('{' not in no_wc), f'extra replacement strings in {target}'
+        table = definition.get('table')
+        if table:
+            assert(SNAKE_CASE.match(table) is not None), 'only "snake_case" names are valid'
 
     def _handles_topic(self, topic, tenant):
         topic_str = self.definition.topic_pattern
@@ -207,7 +169,11 @@ class Subscription(BaseResource):
 class SpannerJob(BaseJob):
     name = 'job'
     # Any type here needs to be registered in the API as APIServer._allowed_types
-    _resources = [SpannerInstance, Subscription]
+    _resources = [
+        BQInstance,
+        SpannerInstance,
+        Subscription
+    ]
     schema = schemas.SPANNER_JOB
 
     public_actions = BaseJob.public_actions + [
@@ -224,13 +190,16 @@ class SpannerJob(BaseJob):
     # processing artifacts
     _indices: dict
     _schemas: dict
+    _schema_hash: dict
     _previous_topics: list
     _spanner: SpannerInstance
+    _bq: BQInstance
     _subscriptions: List[Subscription]
 
     def _setup(self):
         self.subscribed_topics = {}
         self._schemas = {}
+        self._schema_hash = {}
         self._subscriptions = []
         self._previous_topics = []
         self.log_stack = []
@@ -243,6 +212,14 @@ class SpannerJob(BaseJob):
         LOG.debug(args)
         self.consumer = KafkaConsumer(**args)
 
+    def _job_client(self, config=None) -> Union[SpannerInstance, BQInstance]:
+        for fn_ in [self._job_spanner, self._job_bq]:
+            try:
+                return fn_(config)
+            except ConsumerHttpException:
+                pass
+        raise ConsumerHttpException('No valid target specified in Job')
+
     def _job_spanner(self, config=None) -> SpannerInstance:
         if config:
             spanner: List[SpannerInstance] = self.get_resources('spanner', config)
@@ -250,6 +227,14 @@ class SpannerJob(BaseJob):
                 raise ConsumerHttpException('No Spanner associated with Job', 400)
             self._spanner = spanner[0]
         return self._spanner
+
+    def _job_bq(self, config=None) -> BQInstance:
+        if config:
+            bq: List[BQInstance] = self.get_resources('bigquery', config)
+            if not bq:
+                raise ConsumerHttpException('No BigQuery associated with Job', 400)
+            self._bq = bq[0]
+        return self._bq
 
     def _job_subscriptions(self, config=None) -> List[Subscription]:
         if config:
@@ -311,53 +296,70 @@ class SpannerJob(BaseJob):
             self.log.info(f'{self.tenant} added subs to topics: {_diff}')
             self.consumer.subscribe(new_subs, on_assign=self._on_assign)
 
-    # def _handle_messages(self, config, messages):
-    #     self.log.debug(f'{self.group_name} | reading {len(messages)} messages')
-    #     count = 0
-    #     subs = {}
-    #     # spanner: SpannerInstance = self._job_spanner()
-    #     client = None
-    #     first_offset = messages[0].offset
-    #     last_offset = None
-    #     try:
-    #         batch = []
-    #         for msg in messages:
-    #             last_offset = msg.offset
-    #             topic = msg.topic
-    #             if topic not in subs:
-    #                 subs[topic] = self._job_subscription_for_topic(topic)
-    #             subscription = subs[topic]
-    #             schema = msg.schema
-    #             if schema != self._schemas.get(topic):
-    #                 self.log.info(f'{self._id} Schema change on {topic}')
-    #                 self._update_topic(client, subscription, topic, schema)
-    #                 self._schemas[topic] = schema
-    #             else:
-    #                 self.log.debug('Schema unchanged.')
-    #             batch.append(msg.value)
-    #             # self.add_message(msg.value, topic, subs[topic], cfs, batch)
-    #             count += 1
-    #             if (count % MAX_SUBMIT) == 0:
-    #                 # batch.commit()
-    #                 # batch = cfs.batch()
-    #                 pass
-    #         # batch.commit()
-    #         self.log.info(f'processed {count} {topic} docs in tenant {self.tenant}')
-    #     except helpers.ClientException as ce:
-    #         raise MessageHandlingException(
-    #             'submission error',
-    #             details={'offset': offset}
-    #         ) from ce
+    def _handle_messages(self, config, messages):
+        self.log.debug(f'{self.group_name} | reading {len(messages)} messages')
+        count = 0
+        subs = {}
+        resource = self._job_client(config)
+        first_offset = messages[0].offset
+        topic = messages[0].topic
+        if topic not in subs:
+            subs[topic] = self._job_subscription_for_topic(topic)
+        subscription = subs[topic]
+        LOG.debug(f'first offset: {first_offset}')
+        last_offset = None
+        try:
+            batch = []
+            for msg in messages:
+                last_offset = msg.offset
+                schema = msg.schema
+                hash_ = fingerprint_noncanonical(schema)
+                if hash_ != self._schema_hash.get(topic):
+                    self.log.error(f'{self._id} Schema change on {topic}')
+                    self._update_topic(resource, subscription, schema)
+                    self._schemas[topic] = schema
+                    self._schema_hash[topic] = hash_
+                batch.append(msg.value)
+                count += 1
+            self._submit_messages(resource, subscription, batch)
+            self.log.info(f'processed {count} {topic} docs in tenant {self.tenant}')
+        except helpers.ClientException as ce:
+            raise MessageHandlingException(
+                'submission_error',
+                details={
+                    'topic': topic,
+                    'first_offset': first_offset,
+                    'last_offset': last_offset
+                }
+            ) from ce
+
+    def __reset_topic_paritions(self, topic, offset):
+        partitions = self.consumer.assignment()
+        relevant = 0
+        new_partitions = []
+        for p in partitions:
+            if p.topic == topic:
+                p.offset = offset
+                relevant += 1
+            new_partitions.append(p)
+        if relevant:
+            self.consumer.assign(new_partitions)
+        else:
+            LOG.critical('No relevant partitions were found during rewind!')
 
     # thrown manually when something in _handle_messages goes wrong
     def _on_message_handle_exception(self, mhe: MessageHandlingException):
         LOG.error(f'msg_handle_exception: {mhe}')
         if str(mhe) == 'submission_error':
             LOG.debug(mhe.details)
+            topic = mhe.details.get('topic')
+            offset = mhe.details.get('first_offset')
+            if topic and offset:
+                LOG.error(f'rewinding consumer {topic} -> {offset} to handle submission_error')
+                self.__reset_topic_paritions(topic, offset)
 
     # called when a subscription causes a new assignment to be given to the consumer
     def _on_assign(self, *args, **kwargs):
-        # TODO check rules for topic in Firebase
         assignment = args[1]
         for _part in assignment:
             if _part.topic not in self._previous_topics:
@@ -404,12 +406,31 @@ class SpannerJob(BaseJob):
     def _name_from_topic(self, topic):
         return topic.lstrip(f'{self.tenant}.')
 
-    # def _update_topic(self, resource: BQInstance, subscription: Subscription, topic, schema: Mapping[Any, Any]):
-    #     if isinstance(resource, BigQuery):
-    #         client = resource.get_bq()
-    #         table = client._create_table()
-    #         self.log.debug(f'{self.tenant} is updating topic schema: {topic},'
-    #                        f' firebase does not care...')
+    def _update_topic(
+        self,
+        resource: Union[BQInstance, SpannerInstance],
+        subscription: Subscription,
+        schema: Mapping[Any, Any]
+    ):
+        table_id = subscription.definition['table']
+        if isinstance(resource, BQInstance):
+            client = resource.get_client()
+            client.migrate_schema(table_id, schema)
+        else:
+            raise NotImplementedError('Only BigQuery is currently implemented')
+
+    def _submit_messages(
+        self,
+        resource: Union[BQInstance, SpannerInstance],
+        subscription: Subscription,
+        messages: List[Mapping]
+    ):
+        table_id = subscription.definition['table']
+        if isinstance(resource, BQInstance):
+            client = resource.get_client()
+            client.write_rows(table_id, messages)
+        else:
+            raise NotImplementedError('Only BigQuery is currently implemented')
 
     # public
     def list_topics(self, *args, **kwargs):

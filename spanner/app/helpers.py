@@ -24,8 +24,7 @@ from typing import (
     Any, Dict, List, Tuple
 )
 
-from google.api_core.exceptions import NotFound
-from google.api_core.retry import Retry
+from google.api_core.exceptions import BadRequest, NotFound
 from google.auth.credentials import AnonymousCredentials
 from google.cloud.spanner import Client as SpannerClient
 from google.cloud import bigquery
@@ -73,7 +72,13 @@ class Spanner(SpannerClient):
     def _create_table(self, table):
         pass
 
+    def migrate_schema(self, dataset_id, table_id, avro_schema):
+        pass
+
     def check_writable(self, instance, database, table):
+        pass
+
+    def write_rows(self, table, rows):
         pass
 
 
@@ -81,7 +86,8 @@ class BigQuery(bigquery.Client):
 
     def __init__(
         self,
-        credentials: str = None
+        credentials: str = None,
+        dataset: str = None
     ):
 
         credentials = json.loads(credentials)
@@ -90,30 +96,43 @@ class BigQuery(bigquery.Client):
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         self.project = credentials.project_id
+        self.dataset = dataset
         super().__init__(project=self.project, credentials=credentials)
 
-    def _create_dataset(self, dataset):
-        dataset_id = f'{self.project}.{dataset}'
+    def _create_dataset(self):
+        dataset_id = f'{self.project}.{self.dataset}'
         try:
             return self.get_dataset(dataset_id)
-        except NotFound:
+        except (NotFound, BadRequest):
             raise RuntimeError(f'Target dataset {dataset_id} must exist, create it in BQ admin interface')
 
-    def _create_table(self, dataset, table, schema):
+    def _create_table(self, table, schema):
 
-        table_id = f'{self.project}.{dataset}.{table}'
+        table_id = f'{self.project}.{self.dataset}.{table}'
         LOG.debug(table_id)
         try:
             return self.get_table(table_id)
         except NotFound:
             pass
+        except BadRequest as ber:
+            raise ber
         table_ = bigquery.Table(table_id, schema=schema)
         self.create_table(table_)
         return table
 
-    def migrate_schema(self, dataset_id, table_id, avro_schema):  # -> bigquery.Table
-        fqn = f'{self.project}.{dataset_id}.{table_id}'
-        table = self.get_table(fqn)
+    def migrate_schema(self, table_id, avro_schema):  # -> bigquery.Table
+        fqn = f'{self.project}.{self.dataset}.{table_id}'
+        try:
+            table = self.get_table(fqn)
+        except NotFound:
+            LOG.info(f'table {table_id} does not exist, creating')
+            return self._create_table(
+                table_id,
+                BQSchema.from_avro(avro_schema)
+            )
+        except BadRequest as ber:
+            raise ber
+        LOG.info(f'Migrating {table_id}.')
         original_schema = table.schema
         new_schema = BQSchema.merge_schemas(
             original_schema,
@@ -124,12 +143,11 @@ class BigQuery(bigquery.Client):
         # except to fail to submit data
         return table
 
-    def write_rows(self, dataset, table, rows, deadline=30):
-        table_id = f'{self.project}.{dataset}.{table}'
+    def write_rows(self, table, rows):
+        table_id = f'{self.project}.{self.dataset}.{table}'
         errors = self.insert_rows_json(
             table_id,
-            rows,
-            retry=Retry(deadline=deadline)
+            rows
         )
         self._handle_errors(errors)
         return True
