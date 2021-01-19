@@ -1,4 +1,4 @@
-version: "2.1"
+version: "2.4"
 services:
 
   # -------------------------------------
@@ -25,7 +25,7 @@ services:
       CONSUMER_NAME: 'SPANNER-TEST'
       TENANCY_HEADER: x-oauth-realm
       # emulator and remove account settings
-      SERVICE_ACCOUNT: ${SERVICE_ACCOUNT-}
+      SERVICE_ACCOUNT: ${SERVICE_ACCOUNT:-}
       SPANNER_EMULATOR_HOST: emu:9010
       # redis
       REDIS_PASSWORD: password

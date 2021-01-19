@@ -170,7 +170,6 @@ def test__bq_handle_errors():
         }
     ]
 
-    
     try:
         BigQuery._handle_errors(err)
     except ClientException as ce:

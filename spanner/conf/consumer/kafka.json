@@ -1,5 +1,4 @@
 {
-    
     "auto.offset.reset" : "earliest",
     "group.id": "spannermetadataonly",
     "enable.auto.commit": false,

@@ -1,4 +1,4 @@
-FROM python:3.7-slim-stretch
+FROM python:3.8-slim-buster
 
 ################################################################################
 ## setup container
@@ -9,13 +9,13 @@ FROM python:3.7-slim-stretch
 ## copy files one by one and split commands to use docker cache
 ################################################################################
 
-RUN apt-get update -qq && \
+RUN apt-get update -qq > /dev/null && \
     apt-get -qq \
         --yes \
         --allow-downgrades \
         --allow-remove-essential \
         --allow-change-held-packages \
-        install gcc && \
+        install gcc > /dev/null && \
     pip install -q --upgrade pip
 
 WORKDIR /code
