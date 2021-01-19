@@ -48,9 +48,7 @@ def test__bq_mutate_schema_and_submit(
     bq_client,
     bq_table_generator,
     ANNOTATED_SCHEMA_V1,
-    ANNOTATED_SCHEMA_V2,  # speed this up a bit by only doing one transition
-    # ANNOTATED_SCHEMA_V3,
-    # ANNOTATED_SCHEMA_V4
+    ANNOTATED_SCHEMA_V2  # speed this up a bit by only doing one transition
 ):
     
     fqn = bq_table_generator(ANNOTATED_SCHEMA_V1)
@@ -60,16 +58,13 @@ def test__bq_mutate_schema_and_submit(
     for avro_schema in (
         ANNOTATED_SCHEMA_V1,
         ANNOTATED_SCHEMA_V2,
-        # ANNOTATED_SCHEMA_V3,
-        # ANNOTATED_SCHEMA_V4
     ):
         LOG.error(f'migrating -> v{i}')
         table = bq_client.migrate_schema(table_id, avro_schema)
         samples = list(any_sample_generator(avro_schema, max=20, chunk=10))
-        retry = 10
-        backoff = 10
+        retry = 30
         start = 0
-        wait = 0
+        wait = 10
         total = 0
         while retry:
             try:
@@ -81,9 +76,7 @@ def test__bq_mutate_schema_and_submit(
                 if str(ce) != 'schema_mismatch':
                     raise ce
                 retry -= 1
-                total += wait
-                wait += backoff
-                LOG.debug(f'schema mismatch, waiting {wait}, previous total wait: {total}')
+                LOG.debug(f'schema mismatch, waiting {wait}, previous total wait: {wait * (30 - retry)}')
                 sleep(wait)
 
 
@@ -97,12 +90,12 @@ def test__schema_transition(extend_kafka_topic, ANNOTATED_SCHEMA_V2, LoadedLocal
     job = LoadedLocalJob
     ct = 0
     while max(job.get_current_offset().values() or [0]) <= 19:
-        if ct >= 600:
+        if ct >= 150:
             break
         job._run()
-        sleep(.5)
+        sleep(3)
         ct += 1
-    if ct >= 600:
+    if ct >= 150:
         assert(False), 'test timed out'
     assert(True)
 
@@ -119,6 +112,6 @@ def test__job_run(extend_kafka_topic, ANNOTATED_SCHEMA_V3, ANNOTATED_SCHEMA_V4, 
         if offset >= 29:
             assert(True)
             return
-        sleep(1)
+        sleep(3)
     assert(False)
     

@@ -27,7 +27,6 @@ services:
       # emulator and remove account settings
       SERVICE_ACCOUNT: ${SERVICE_ACCOUNT-}
       SPANNER_EMULATOR_HOST: emu:9010
-      BQ_TEST_DATASET: spannertest-299416:sarwar
       # redis
       REDIS_PASSWORD: password
       # kafka settings

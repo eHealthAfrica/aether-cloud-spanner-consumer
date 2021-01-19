@@ -5,17 +5,19 @@ services:
     extends:
       file: docker-compose-base.yml
       service: spanner-consumer
-    ports:
-      - 9013:9013
     environment:
       # consumer settings
       CONSUMER_NAME: 'SPANNER-TEST'
       TENANCY_HEADER: x-oauth-realm
+      EXPOSE_PORT: 9013
+      # emulator and remove account settings
+      SERVICE_ACCOUNT: ${SERVICE_ACCOUNT-}
+      SPANNER_EMULATOR_HOST: emu:9010
       # redis
+      REDIS_PASSWORD: password
       REDIS_DB: 0
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      REDIS_PASSWORD: password
       # kafka settings
       KAFKA_CONFIG_PATH: /code/conf/consumer/kafka.json
       KAFKA_URL: ${KAFKA_URL}
@@ -23,7 +25,8 @@ services:
       SASL.MECHANISM: PLAIN
       SASL.USERNAME: ${KAFKA_SASL_USERNAME}
       SASL.PASSWORD: ${KAFKA_SASL_PASSWORD}
-
+    ports:
+      - 9013:9013
   redis:
     image: redis:alpine
     command: >
