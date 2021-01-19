@@ -183,7 +183,7 @@ def JobManagerRunningConsumer(
 def service_account_dict():
     account = os.environ.get('SERVICE_ACCOUNT')
     if account:
-        yield json.loads(account)
+        yield json.loads(account.strip())
     else:
         yield None
 
