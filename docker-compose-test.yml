@@ -24,7 +24,7 @@ services:
       # consumer settings
       CONSUMER_NAME: 'SPANNER-TEST'
       TENANCY_HEADER: x-oauth-realm
-      # emulator and remove account settings
+      # emulator and remote account settings
       SERVICE_ACCOUNT: ${SERVICE_ACCOUNT:-}
       SPANNER_EMULATOR_HOST: emu:9010
       # redis
