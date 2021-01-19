@@ -15,7 +15,7 @@ RUN apt-get update -qq > /dev/null && \
         --allow-downgrades \
         --allow-remove-essential \
         --allow-change-held-packages \
-        install gcc > /dev/null && \
+        install gcc build-essential > /dev/null && \
     pip install -q --upgrade pip
 
 WORKDIR /code

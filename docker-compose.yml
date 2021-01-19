@@ -11,7 +11,7 @@ services:
       TENANCY_HEADER: x-oauth-realm
       EXPOSE_PORT: 9013
       # emulator and remove account settings
-      SERVICE_ACCOUNT: ${SERVICE_ACCOUNT-}
+      SERVICE_ACCOUNT: ${SERVICE_ACCOUNT:-}
       SPANNER_EMULATOR_HOST: emu:9010
       # redis
       REDIS_PASSWORD: password
