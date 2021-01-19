@@ -89,11 +89,15 @@ def test__schema_transition(extend_kafka_topic, ANNOTATED_SCHEMA_V2, LoadedLocal
     extend_kafka_topic(ANNOTATED_SCHEMA_V2, 100)
     job = LoadedLocalJob
     ct = 0
+    last_offset = None
     while max(job.get_current_offset().values() or [0]) <= 19:
         if ct >= 150:
             break
         job._run()
-        sleep(3)
+        offset = job.get_current_offset().values()
+        if offset == last_offset:
+            sleep(3)
+        last_offset = offset
         ct += 1
     if ct >= 150:
         assert(False), 'test timed out'
