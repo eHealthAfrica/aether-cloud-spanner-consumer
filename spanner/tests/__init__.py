@@ -176,7 +176,6 @@ def JobManagerRunningConsumer(
     c.stop()
 
 
-
 @pytest.mark.unit
 @pytest.mark.integration
 @pytest.fixture(scope='session')
@@ -344,12 +343,14 @@ def ANNOTATED_SCHEMA_V3(ANNOTATED_SCHEMA_V2):
     )
     yield schema
 
+
 @pytest.fixture(scope='session')
 def ANNOTATED_SCHEMA_V4(ANNOTATED_SCHEMA_V3):
     schema = copy.deepcopy(ANNOTATED_SCHEMA_V3)
     # relax 'MySurvey.extra_field' -> required (illegal)
     schema['fields'][-1]['type'] = 'string'
     yield schema
+
 
 # @pytest.mark.integration
 @pytest.fixture(scope='session', autouse=True)
@@ -416,7 +417,6 @@ def make_local_spanner(request, local_spanner_instance, *args):
     LOG.debug(local_spanner_instance.display_name)
 
 
-
 @pytest.mark.unit
 @pytest.mark.integration
 @pytest.fixture(scope='session')
@@ -441,7 +441,6 @@ def any_sample_generator():
         else:
             yield from _single(max)
     yield _gen
-
 
 
 @pytest.mark.unit
