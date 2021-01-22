@@ -25,9 +25,6 @@ setup(
     author_email="shawn.sarwar@ehealthafrica.org",
     description='''An Aether Consumer for CloudSpanner''',
     version='0.0.0',
-    setup_requires=['pytest-runner'],
-    tests_require=['pytest', 'aet.consumer',
-                   'mock', 'firebase-admin'],
     url='https://github.com/eHealthAfrica/aether-cloud-spanner-consumer',
     keywords=['aet', 'aether', 'kafka', 'consumer', 'cloudspanner'],
     classifiers=[]

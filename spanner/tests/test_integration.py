@@ -118,4 +118,3 @@ def test__job_run(extend_kafka_topic, ANNOTATED_SCHEMA_V3, ANNOTATED_SCHEMA_V4, 
             return
         sleep(3)
     assert(False)
-    
