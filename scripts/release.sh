@@ -43,7 +43,7 @@ release_app () {
   echo "Building Docker image ${IMAGE_REPO}/${AETHER_APP}:${VERSION}"
   docker-compose -f $COMPOSE_PATH build $APP_NAME
 
-  docker tag ${$APP_NAME} "${IMAGE_REPO}/${AETHER_APP}:${VERSION}"
+  docker tag ${APP_NAME} "${IMAGE_REPO}/${AETHER_APP}:${VERSION}"
   echo "Pushing Docker image ${IMAGE_REPO}/${AETHER_APP}:${VERSION}"
   docker push "${IMAGE_REPO}/${AETHER_APP}:${VERSION}"
 
