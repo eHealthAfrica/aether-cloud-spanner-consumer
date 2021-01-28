@@ -300,18 +300,22 @@ SPANNER_JOB = '''
   "$id": "http://example.com/root.json",
   "type": "object",
   "title": "SpannerJob",
-  "oneOf": {
-    "required": [
-      "id",
-      "name",
-      "spanner"
-    ],
-    "required": [
-      "id",
-      "name",
-      "bigquery"
-    ],
-  },
+  "oneOf": [
+    {
+      "required": [
+        "id",
+        "name",
+        "spanner"
+      ]
+    },
+    {
+      "required": [
+        "id",
+        "name",
+        "bigquery"
+      ]
+    }
+  ],
   "properties": {
     "id": {
       "$id": "#/properties/id",
